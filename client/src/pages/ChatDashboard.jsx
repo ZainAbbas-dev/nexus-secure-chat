@@ -98,22 +98,20 @@ export default function ChatDashboard() {
     return () => newSocket.disconnect();
   }, [user]);
 
-  // FIX: Accurate Online Status Handling
+  // FIX: Accurate Online Status Handling (Forces lowercase synchronization)
   useEffect(() => {
-    if (!socket || !user) return;
+    if (!socket || !user?.email) return;
 
     const registerUser = () => socket.emit('register_user', user.email);
-    
-    // Register immediately, and re-register if the network drops and reconnects
     registerUser();
     socket.on('connect', registerUser);
 
-    const handleOnlineUsers = (onlineEmails) => setOnlineUsersSet(new Set(onlineEmails));
-    const handleUserOnline = (email) => setOnlineUsersSet(prev => new Set(prev).add(email));
+    const handleOnlineUsers = (emails) => setOnlineUsersSet(new Set(emails.map(e => e.toLowerCase())));
+    const handleUserOnline = (email) => setOnlineUsersSet(prev => new Set(prev).add(email.toLowerCase()));
     const handleUserOffline = (email) => {
       setOnlineUsersSet(prev => {
         const newSet = new Set(prev);
-        newSet.delete(email);
+        newSet.delete(email.toLowerCase());
         return newSet;
       });
     };
@@ -167,7 +165,7 @@ export default function ChatDashboard() {
     };
   }, [activeChat, user?.email, socket]); 
 
-  // EXACT WHATSAPP LOGIC FIX: Auto-read when opening a chat
+  // FIX: WHATSAPP LOGIC - Auto trigger read receipts ONLY for unread messages upon opening chat
   useEffect(() => {
     if (!activeChat || !socket || !room || messages.length === 0) return;
 
@@ -175,13 +173,13 @@ export default function ChatDashboard() {
     const updatedMessages = messages.map(msg => {
       if (msg.author !== user?.full_name && msg.status !== 'read' && msg.id) {
         hasChanges = true;
-        socket.emit("message_read", { room, messageId: msg.id });
+        // Pass tempId to safely traverse the race condition
+        socket.emit("message_read", { room, messageId: msg.id, tempId: msg.tempId });
         return { ...msg, status: 'read' };
       }
       return msg;
     });
 
-    // Only update state if something changed to prevent infinite rendering
     if (hasChanges) {
       setMessages(updatedMessages);
     }
@@ -197,12 +195,12 @@ export default function ChatDashboard() {
       setMessages((prev) => [...prev, { ...data, message: decryptedMsg }]);
       
       if (data.author !== user.full_name && data.id) {
-        // Step 1: It reached the device -> 2 Grey Ticks
-        socket.emit("message_delivered", { room: correctRoomId, messageId: data.id });
+        // Step 1: Message reached the phone (Delivered - 2 Grey Ticks)
+        socket.emit("message_delivered", { room: correctRoomId, messageId: data.id, tempId: data.tempId });
 
-        // Step 2: User is actively looking at this exact chat -> 2 Blue Ticks
+        // Step 2: User is currently looking at this active chat (Read - 2 Blue Ticks)
         if (correctRoomId === room) {
-          socket.emit("message_read", { room: correctRoomId, messageId: data.id });
+          socket.emit("message_read", { room: correctRoomId, messageId: data.id, tempId: data.tempId });
           setTrustData(prev => ({ ...prev, count: prev.count + 1 }));
         }
       }
@@ -210,12 +208,13 @@ export default function ChatDashboard() {
 
     socket.on("receive_message", handleReceive);
     
-    socket.on("message_delivered", (id) => {
-      setMessages(prev => prev.map(msg => (msg.id === id || msg.tempId === id) && msg.status !== 'read' ? { ...msg, status: 'delivered' } : msg));
+    // FIX: Match by either ID or tempId to beat the database race condition
+    socket.on("message_delivered", ({ id, tempId }) => {
+      setMessages(prev => prev.map(msg => (msg.id === id || msg.tempId === tempId) && msg.status !== 'read' ? { ...msg, status: 'delivered' } : msg));
     });
     
-    socket.on("message_read", (id) => {
-      setMessages(prev => prev.map(msg => (msg.id === id || msg.tempId === id) ? { ...msg, status: 'read' } : msg));
+    socket.on("message_read", ({ id, tempId }) => {
+      setMessages(prev => prev.map(msg => (msg.id === id || msg.tempId === tempId) ? { ...msg, status: 'read' } : msg));
     });
 
     socket.on("message_deleted_everyone", (id) => setMessages(prev => prev.map(msg => (msg.id === id || msg.tempId === id) ? { ...msg, is_deleted: true, message: '[DELETED]' } : msg)));
@@ -328,12 +327,20 @@ export default function ChatDashboard() {
       time: timeString, tempId: Date.now().toString() + Math.random().toString(), status: 'sent'
     };
 
+    // FIX: Prevent database callback from downgrading a 'delivered/read' status back to 'sent'
     socket.emit("send_message", messageData, (serverMessage) => {
-      if(serverMessage) setMessages(prev => prev.map(msg => msg.tempId === messageData.tempId ? { ...serverMessage, message: messageContent } : msg));
+      if(serverMessage) {
+        setMessages(prev => prev.map(msg => {
+          if (msg.tempId === messageData.tempId) {
+            const advancedStatus = (msg.status === 'read' || msg.status === 'delivered') ? msg.status : serverMessage.status;
+            return { ...serverMessage, message: messageContent, status: advancedStatus };
+          }
+          return msg;
+        }));
+      }
     });
     
     setMessages((prev) => [...prev, { ...messageData, message: messageContent }]);
-    
     setTrustData(prev => ({ ...prev, count: prev.count + 1 })); 
   };
 
@@ -384,7 +391,7 @@ export default function ChatDashboard() {
             >
               <div className="relative">
                 {contact.avatar ? <img src={contact.avatar} alt="Avatar" className="h-10 w-10 rounded-full object-cover" /> : <div className="h-10 w-10 bg-gray-700 rounded-full flex items-center justify-center"><UserIcon className="h-5 w-5 text-gray-300" /></div>}
-                {onlineUsersSet.has(contact.email) && (
+                {onlineUsersSet.has(contact.email?.toLowerCase()) && (
                   <div className="absolute -bottom-1 -right-1 w-3.5 h-3.5 bg-green-500 rounded-full border-2 border-dark-900"></div>
                 )}
                 {contact.is_verified && <div className="absolute -bottom-1 -right-1 bg-dark-900 rounded-full p-0.5"><BadgeCheck className="h-3 w-3 text-blue-400" /></div>}
