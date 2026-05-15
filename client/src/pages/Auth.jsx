@@ -52,7 +52,7 @@ export default function Auth() {
             <MessageSquare className="h-8 w-8 text-white" />
           </div>
           <h2 className="mt-6 text-3xl font-bold tracking-tight text-white">
-            {isLogin ? 'Welcome back' : 'Create an account'}
+            {isLogin ? 'Nexus Secure Chat' : 'Create an account'}
           </h2>
         </div>
 

@@ -191,7 +191,7 @@ This project uses a hybrid deployment model to preserve full real-time functiona
 2. Set the root directory to `server`.
 3. Build command: `npm install`
 4. Start command: `node server.js`
-5. Add environment variables: `DATABASE_URL`, `JWT_SECRET`, `CLIENT_URL` (your Vercel frontend URL).
+5. Add environment variables: `DATABASE_URL`, `JWT_SECRET`, `CLIENT_URL` (https://nexus-secure-chat-savr.vercel.app/).
 
 > **Note:** File uploads are stored locally in `server/uploads`. On Render, the filesystem is ephemeral and uploaded files will not persist across deploys. For production use, integrate cloud storage such as AWS S3, Cloudinary, or Vercel Blob.
 

@@ -6,7 +6,6 @@ import axios from 'axios';
 import CryptoJS from 'crypto-js';
 import Editor from '@monaco-editor/react';
 
-// Get API URL from Vite environment variables, fallback to localhost if not set (for local dev)
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
 
 const getRoomKey = (roomId) => {
@@ -22,10 +21,8 @@ const generateRoomId = (me, them) => {
 
 const rtcConfig = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
-// --- AI Feature: Spam / Scam Detection Engine ---
 const isSpam = (text) => {
   if (!text) return false;
-  // Detects urgency, phishing links, crypto scams, or raw IP addresses
   const spamRegex = /(?:verify.*account|update.*payment|password.*reset|crypto.*giveaway|click.*link.*win|http:\/\/\d+\.\d+\.\d+\.\d+|free.*money)/i;
   return spamRegex.test(text);
 };
@@ -46,32 +43,26 @@ export default function ChatDashboard() {
   const [messages, setMessages] = useState([]);
   const [isTyping, setIsTyping] = useState(false);
   
-  // WebRTC
   const [callStatus, setCallStatus] = useState('idle'); 
   const [incomingCallData, setIncomingCallData] = useState(null);
   const [localStream, setLocalStream] = useState(null);
   const [remoteStream, setRemoteStream] = useState(null);
 
-  // Modals & UI
   const [showDeleteModal, setShowDeleteModal] = useState(null);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showClearChatModal, setShowClearChatModal] = useState(false);
   const [editName, setEditName] = useState(user?.full_name || "");
 
-  // Whiteboard
   const [showWhiteboard, setShowWhiteboard] = useState(false);
   const [isDrawing, setIsDrawing] = useState(false);
   const [brushColor, setBrushColor] = useState("#3b82f6"); 
   
-  // Live Code
   const [showCodeEditor, setShowCodeEditor] = useState(false);
   const [liveCode, setLiveCode] = useState("// Write your code here...");
 
-  // Trust State
   const [trustData, setTrustData] = useState({ score: 0, level: 'New Contact', count: 0 });
   const [showTrustModal, setShowTrustModal] = useState(false);
 
-  // Online users state
   const [onlineUsersSet, setOnlineUsersSet] = useState(new Set());
 
   const canvasRef = useRef(null);
@@ -102,27 +93,23 @@ export default function ChatDashboard() {
 
   useEffect(() => {
     if (!user) return; 
-    // FIXED: Use dynamic API URL
     const newSocket = io(API_URL);
     setSocket(newSocket);
     return () => newSocket.disconnect();
   }, [user]);
 
-  // Socket event listeners for online status
+  // FIX: Accurate Online Status Handling
   useEffect(() => {
     if (!socket || !user) return;
 
-    // Register user with socket server
-    socket.emit('register_user', user.email);
+    const registerUser = () => socket.emit('register_user', user.email);
+    
+    // Register immediately, and re-register if the network drops and reconnects
+    registerUser();
+    socket.on('connect', registerUser);
 
-    const handleOnlineUsers = (onlineEmails) => {
-      setOnlineUsersSet(new Set(onlineEmails));
-    };
-
-    const handleUserOnline = (email) => {
-      setOnlineUsersSet(prev => new Set(prev).add(email));
-    };
-
+    const handleOnlineUsers = (onlineEmails) => setOnlineUsersSet(new Set(onlineEmails));
+    const handleUserOnline = (email) => setOnlineUsersSet(prev => new Set(prev).add(email));
     const handleUserOffline = (email) => {
       setOnlineUsersSet(prev => {
         const newSet = new Set(prev);
@@ -136,6 +123,7 @@ export default function ChatDashboard() {
     socket.on('user_offline', handleUserOffline);
 
     return () => {
+      socket.off('connect', registerUser);
       socket.off('online_users', handleOnlineUsers);
       socket.off('user_online', handleUserOnline);
       socket.off('user_offline', handleUserOffline);
@@ -146,7 +134,6 @@ export default function ChatDashboard() {
     if (!user?.email) return;
     const fetchUsers = async () => {
       try {
-        // FIXED: Use dynamic API URL
         const res = await axios.get(`${API_URL}/api/users`);
         setUsers(res.data.filter(u => u.email !== user.email));
       } catch (err) {}
@@ -162,11 +149,9 @@ export default function ChatDashboard() {
 
     const fetchData = async () => {
       try {
-        // FIXED: Use dynamic API URL
         const msgRes = await axios.get(`${API_URL}/api/messages/${roomId}`);
         setMessages(msgRes.data.map(msg => ({ ...msg, message: decryptMessage(msg.message, roomId) })));
         
-        // FIXED: Use dynamic API URL
         const trustRes = await axios.get(`${API_URL}/api/trust/${roomId}`);
         setTrustData(trustRes.data);
       } catch (error) {}
@@ -182,17 +167,26 @@ export default function ChatDashboard() {
     };
   }, [activeChat, user?.email, socket]); 
 
-  // Auto trigger Read receipts for messages that are already delivered (on chat open)
+  // EXACT WHATSAPP LOGIC FIX: Auto-read when opening a chat
   useEffect(() => {
-    if (!activeChat || !socket || !room) return;
-    const unreadMessages = messages.filter(msg => msg.author !== user?.full_name && msg.status === 'delivered');
-    if (unreadMessages.length > 0) {
-      unreadMessages.forEach(msg => socket.emit("message_read", { room, messageId: msg.id || msg.tempId }));
-      setMessages(prev => prev.map(msg => msg.author !== user?.full_name && msg.status === 'delivered' ? { ...msg, status: 'read' } : msg));
+    if (!activeChat || !socket || !room || messages.length === 0) return;
+
+    let hasChanges = false;
+    const updatedMessages = messages.map(msg => {
+      if (msg.author !== user?.full_name && msg.status !== 'read' && msg.id) {
+        hasChanges = true;
+        socket.emit("message_read", { room, messageId: msg.id });
+        return { ...msg, status: 'read' };
+      }
+      return msg;
+    });
+
+    // Only update state if something changed to prevent infinite rendering
+    if (hasChanges) {
+      setMessages(updatedMessages);
     }
   }, [messages, activeChat, socket, room, user?.full_name]);
 
-  // --- Socket Listeners ---
   useEffect(() => {
     if (!socket || !user) return;
 
@@ -202,20 +196,28 @@ export default function ChatDashboard() {
       
       setMessages((prev) => [...prev, { ...data, message: decryptedMsg }]);
       
-      // Notify sender that message was delivered
-      socket.emit("message_delivered", { room: correctRoomId, messageId: data.id || data.tempId });
+      if (data.author !== user.full_name && data.id) {
+        // Step 1: It reached the device -> 2 Grey Ticks
+        socket.emit("message_delivered", { room: correctRoomId, messageId: data.id });
 
-      // Immediately mark as read if the message is from someone else (user is viewing it)
-      if (data.author !== user.full_name) {
-        socket.emit("message_read", { room: correctRoomId, messageId: data.id || data.tempId });
-        // Update trust count locally
-        setTrustData(prev => ({ ...prev, count: prev.count + 1 }));
+        // Step 2: User is actively looking at this exact chat -> 2 Blue Ticks
+        if (correctRoomId === room) {
+          socket.emit("message_read", { room: correctRoomId, messageId: data.id });
+          setTrustData(prev => ({ ...prev, count: prev.count + 1 }));
+        }
       }
     };
 
     socket.on("receive_message", handleReceive);
-    socket.on("message_delivered", (id) => setMessages(prev => prev.map(msg => (msg.id === id || msg.tempId === id) ? { ...msg, status: 'delivered' } : msg)));
-    socket.on("message_read", (id) => setMessages(prev => prev.map(msg => (msg.id === id || msg.tempId === id) ? { ...msg, status: 'read' } : msg)));
+    
+    socket.on("message_delivered", (id) => {
+      setMessages(prev => prev.map(msg => (msg.id === id || msg.tempId === id) && msg.status !== 'read' ? { ...msg, status: 'delivered' } : msg));
+    });
+    
+    socket.on("message_read", (id) => {
+      setMessages(prev => prev.map(msg => (msg.id === id || msg.tempId === id) ? { ...msg, status: 'read' } : msg));
+    });
+
     socket.on("message_deleted_everyone", (id) => setMessages(prev => prev.map(msg => (msg.id === id || msg.tempId === id) ? { ...msg, is_deleted: true, message: '[DELETED]' } : msg)));
     
     socket.on("receive_code_update", (code) => setLiveCode(code));
@@ -250,7 +252,6 @@ export default function ChatDashboard() {
 
   useEffect(() => scrollToBottom(), [messages, isTyping]);
 
-  // Cleanup typing timeout on unmount
   useEffect(() => {
     return () => {
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
@@ -263,7 +264,6 @@ export default function ChatDashboard() {
   const handleProfileUpdate = async (e) => {
     e.preventDefault();
     try {
-      // FIXED: Use dynamic API URL
       const res = await axios.put(`${API_URL}/api/users/profile`, { email: user.email, full_name: editName, avatar: user.avatar || '' });
       const updatedUser = { ...user, ...res.data };
       localStorage.setItem('nexus_user', JSON.stringify(updatedUser)); setUser(updatedUser); setShowProfileModal(false);
@@ -274,11 +274,9 @@ export default function ChatDashboard() {
     const file = e.target.files[0]; if (!file) return;
     const formData = new FormData(); formData.append('file', file);
     try {
-      // FIXED: Use dynamic API URL
       const res = await axios.post(`${API_URL}/api/upload`, formData);
       const updatedUser = { ...user, avatar: res.data.url };
       localStorage.setItem('nexus_user', JSON.stringify(updatedUser)); setUser(updatedUser);
-      // FIXED: Use dynamic API URL
       await axios.put(`${API_URL}/api/users/profile`, { email: user.email, full_name: user.full_name, avatar: res.data.url });
     } catch (err) {}
   };
@@ -294,7 +292,6 @@ export default function ChatDashboard() {
 
   const handleClearChat = () => { socket.emit("clear_chat", { room, requester: user.full_name }); setMessages([]); setShowClearChatModal(false); };
 
-  // --- WebRTC Setup ---
   const setupPeerConnection = () => { const pc = new RTCPeerConnection(rtcConfig); pc.onicecandidate = (event) => { if (event.candidate && socket && callRoomRef.current) socket.emit("ice_candidate", { room: callRoomRef.current, candidate: event.candidate }); }; pc.ontrack = (event) => setRemoteStream(event.streams[0]); peerConnectionRef.current = pc; return pc; };
   const getMedia = async (videoEnabled = true) => { try { const stream = await navigator.mediaDevices.getUserMedia({ video: videoEnabled, audio: true }); setLocalStream(stream); return stream; } catch (err) { return null; } };
   const startCall = async (videoEnabled = true) => { if (!room || !socket || !user) return; setCallStatus('calling'); callRoomRef.current = room; const stream = await getMedia(videoEnabled); if (!stream) { setCallStatus('idle'); callRoomRef.current = null; return; } const pc = setupPeerConnection(); stream.getTracks().forEach(track => pc.addTrack(track, stream)); const offer = await pc.createOffer(); await pc.setLocalDescription(offer); socket.emit("call_user", { room, from: user.full_name, offer, type: videoEnabled ? 'video' : 'audio' }); };
@@ -302,7 +299,6 @@ export default function ChatDashboard() {
   const endCallLocal = () => { if (peerConnectionRef.current) { peerConnectionRef.current.close(); peerConnectionRef.current = null; } if (localStream) localStream.getTracks().forEach(track => track.stop()); setLocalStream(null); setRemoteStream(null); setCallStatus('idle'); setIncomingCallData(null); callRoomRef.current = null; };
   const endCallNetwork = () => { endCallLocal(); if (socket && room) socket.emit("end_call", room); };
 
-  // --- Whiteboard Logic ---
   useEffect(() => { if (showWhiteboard && canvasRef.current) { const ctx = canvasRef.current.getContext("2d"); canvasRef.current.width = 800; canvasRef.current.height = 500; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.lineWidth = 4; ctxRef.current = ctx; } }, [showWhiteboard]);
   const drawOnCanvas = (start, end, color) => { if (!ctxRef.current) return; ctxRef.current.beginPath(); ctxRef.current.strokeStyle = color; ctxRef.current.moveTo(start.x, start.y); ctxRef.current.lineTo(end.x, end.y); ctxRef.current.stroke(); ctxRef.current.closePath(); };
   const startDrawing = ({ nativeEvent }) => { lastPos.current = { x: nativeEvent.offsetX, y: nativeEvent.offsetY }; setIsDrawing(true); };
@@ -338,7 +334,7 @@ export default function ChatDashboard() {
     
     setMessages((prev) => [...prev, { ...messageData, message: messageContent }]);
     
-    setTrustData(prev => ({ ...prev, count: prev.count + 1 })); // Increment local trust count
+    setTrustData(prev => ({ ...prev, count: prev.count + 1 })); 
   };
 
   const sendMessage = async (e) => { e.preventDefault(); if (currentMessage.trim() !== "" && room && socket) { await emitMessage(currentMessage); setCurrentMessage(""); socket.emit("stop_typing", room); }};
@@ -348,7 +344,6 @@ export default function ChatDashboard() {
     const formData = new FormData(); 
     formData.append('file', file); 
     try { 
-      // FIXED: Use dynamic API URL
       const res = await axios.post(`${API_URL}/api/upload`, formData); 
       await emitMessage(res.data.url); 
     } catch (err) {} 
@@ -357,17 +352,14 @@ export default function ChatDashboard() {
 
   if (!user) return null; 
   
-  // Filter out 'deleted for me' messages
   const visibleMessages = messages.filter(msg => !(msg.deleted_for && msg.deleted_for.includes(user.full_name)));
 
-  // Trust Score Dynamic Colors
   const shieldColor = trustData.score >= 75 ? 'text-green-400' : trustData.score >= 40 ? 'text-yellow-400' : 'text-gray-400';
   const shieldBg = trustData.score >= 75 ? 'bg-green-500/10 border-green-500/20' : trustData.score >= 40 ? 'bg-yellow-500/10 border-yellow-500/20' : 'bg-gray-500/10 border-gray-500/20';
 
   return (
     <div className="flex h-screen bg-dark-900 text-white overflow-hidden relative">
       
-      {/* Sidebar */}
       <div className="w-1/3 max-sm:w-full max-w-sm border-r border-gray-800 flex flex-col bg-dark-900 z-10">
         <div className="h-16 border-b border-gray-800 flex items-center justify-between px-4 bg-dark-800">
           <div className="flex items-center gap-3">
@@ -392,11 +384,9 @@ export default function ChatDashboard() {
             >
               <div className="relative">
                 {contact.avatar ? <img src={contact.avatar} alt="Avatar" className="h-10 w-10 rounded-full object-cover" /> : <div className="h-10 w-10 bg-gray-700 rounded-full flex items-center justify-center"><UserIcon className="h-5 w-5 text-gray-300" /></div>}
-                {/* Online indicator dot */}
                 {onlineUsersSet.has(contact.email) && (
                   <div className="absolute -bottom-1 -right-1 w-3.5 h-3.5 bg-green-500 rounded-full border-2 border-dark-900"></div>
                 )}
-                {/* Sidebar Verification Badge */}
                 {contact.is_verified && <div className="absolute -bottom-1 -right-1 bg-dark-900 rounded-full p-0.5"><BadgeCheck className="h-3 w-3 text-blue-400" /></div>}
               </div>
               <h4 className="font-medium text-white">{contact.full_name}</h4>
@@ -405,13 +395,10 @@ export default function ChatDashboard() {
         </div>
       </div>
 
-      {/* Main Chat Area */}
       <div className={`flex-1 flex flex-col bg-dark-900/95 transition-all z-10 ${!activeChat ? 'max-sm:hidden' : ''}`}>
         {activeChat ? (
           <>
             <div className="h-16 border-b border-gray-800 flex items-center justify-between px-6 bg-dark-800 shadow-sm">
-              
-              {/* Trust Score Header Indicator */}
               <div className="flex items-center gap-3 cursor-pointer hover:bg-dark-800 p-1.5 rounded-lg transition" onClick={() => setShowTrustModal(true)}>
                  <div className="relative">
                    {activeChat.avatar ? <img src={activeChat.avatar} alt="Avatar" className="h-10 w-10 rounded-full object-cover" /> : <div className="h-10 w-10 bg-gray-700 rounded-full flex items-center justify-center"><UserIcon className="h-5 w-5 text-gray-300" /></div>}
@@ -439,20 +426,15 @@ export default function ChatDashboard() {
               </div>
             </div>
 
-            {/* Messages Area */}
             <div className="flex-1 overflow-y-auto p-6 space-y-4 relative">
               {visibleMessages.map((msg) => {
                 const isMe = msg.author === user?.full_name;
-                // FIXED: Use dynamic API URL for file rendering
                 const isFileUrl = msg.message.startsWith(`${API_URL}/uploads/`);
                 const isImage = isFileUrl && msg.message.match(/\.(jpeg|jpg|gif|png|webp)$/i) != null;
                 const isDoc = isFileUrl && !isImage;
                 const isCodeBlock = msg.message === "LIVE_CODE_BLOCK";
                 
-                // AI Spam Warning Check
                 const spamFlag = !isMe && !msg.is_deleted && !isFileUrl && !isCodeBlock && isSpam(msg.message);
-
-                // Use a unique key: prefer id, fallback to tempId, then index (as last resort)
                 const messageKey = msg.id || msg.tempId || `msg-${Math.random()}`;
 
                 return (
@@ -460,7 +442,6 @@ export default function ChatDashboard() {
                     <div className={`flex items-center gap-2 ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
                       <div className={`max-w-[70%] px-4 py-2 rounded-2xl shadow-md ${ msg.is_deleted ? 'bg-transparent border border-gray-700 text-gray-500 italic' : isCodeBlock ? 'bg-gray-800 border border-green-500/50 text-white rounded-lg w-64' : isMe ? 'bg-brand-500 text-white rounded-tr-sm' : 'bg-dark-800 border border-gray-700 text-gray-100 rounded-tl-sm'}`}>
                         
-                        {/* Scam Warning Banner */}
                         {spamFlag && (
                           <div className="bg-red-500/20 border border-red-500/50 text-red-200 text-xs p-2 rounded-lg mb-2 flex gap-2 items-start">
                             <ShieldAlert className="h-4 w-4 shrink-0 text-red-400" />
@@ -486,6 +467,7 @@ export default function ChatDashboard() {
                         {!msg.is_deleted && (
                           <span className="text-[10px] opacity-60 flex justify-end mt-1 items-center gap-1">
                             {msg.time}
+                            {/* WHATSAPP READ RECEIPTS VISUAL LOGIC */}
                             {isMe && (msg.status === 'read' ? <CheckCheck className="h-3 w-3 text-blue-400" /> : msg.status === 'delivered' ? <CheckCheck className="h-3 w-3 text-gray-300" /> : <Check className="h-3 w-3 text-gray-400" />)}
                           </span>
                         )}
@@ -503,11 +485,7 @@ export default function ChatDashboard() {
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Input Area */}
             <div className="flex flex-col bg-dark-800 border-t border-gray-800">
-              
-              {/* AI Smart Replies Container removed */}
-
               <div className="p-4">
                 <form onSubmit={sendMessage} className="flex gap-2">
                   <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
@@ -525,78 +503,42 @@ export default function ChatDashboard() {
         )}
       </div>
 
-      {/* --- Modals & Overlays --- */}
-
-      {/* Trust Score Breakdown Modal */}
       {showTrustModal && (
         <div className="absolute inset-0 bg-dark-900/80 z-50 flex items-center justify-center backdrop-blur-sm">
           <div className="bg-dark-800 p-8 rounded-3xl border border-gray-700 w-[400px] shadow-2xl relative text-center">
             <button onClick={() => setShowTrustModal(false)} className="absolute top-4 right-4 text-gray-400 hover:text-white transition"><X className="h-5 w-5"/></button>
-            
             <div className="flex justify-center mb-4">
                {trustData.score >= 75 ? <ShieldCheck className="h-16 w-16 text-green-500 drop-shadow-[0_0_15px_rgba(34,197,94,0.3)]" /> : trustData.score >= 40 ? <Shield className="h-16 w-16 text-yellow-500" /> : <ShieldAlert className="h-16 w-16 text-gray-500" />}
             </div>
-            
             <h2 className="text-2xl font-bold text-white mb-1">Trust Score: {trustData.score}%</h2>
             <p className={`text-sm font-semibold mb-6 ${shieldColor}`}>{trustData.level}</p>
-
             <div className="bg-dark-900 rounded-2xl p-5 text-left space-y-4 mb-6 border border-gray-800">
-              <div className="flex justify-between text-sm items-center">
-                <span className="text-gray-400">Interaction History</span>
-                <span className="text-white font-medium bg-dark-800 px-3 py-1 rounded-lg">{trustData.count} Messages</span>
-              </div>
-              <div className="flex justify-between text-sm items-center">
-                <span className="text-gray-400">E2EE Secured</span>
-                <span className="text-white font-medium flex items-center gap-1"><Check className="h-4 w-4 text-green-500"/> Yes</span>
-              </div>
-              <div className="flex justify-between text-sm items-center">
-                <span className="text-gray-400">Identity Badge</span>
-                <span className="text-white font-medium">{trustData.score >= 75 || activeChat?.is_verified ? <span className="flex items-center gap-1 text-blue-400"><BadgeCheck className="h-4 w-4"/> Verified</span> : 'Unverified'}</span>
-              </div>
+              <div className="flex justify-between text-sm items-center"><span className="text-gray-400">Interaction History</span><span className="text-white font-medium bg-dark-800 px-3 py-1 rounded-lg">{trustData.count} Messages</span></div>
+              <div className="flex justify-between text-sm items-center"><span className="text-gray-400">E2EE Secured</span><span className="text-white font-medium flex items-center gap-1"><Check className="h-4 w-4 text-green-500"/> Yes</span></div>
+              <div className="flex justify-between text-sm items-center"><span className="text-gray-400">Identity Badge</span><span className="text-white font-medium">{trustData.score >= 75 || activeChat?.is_verified ? <span className="flex items-center gap-1 text-blue-400"><BadgeCheck className="h-4 w-4"/> Verified</span> : 'Unverified'}</span></div>
             </div>
-            
-            <p className="text-xs text-gray-500 leading-relaxed">
-              Trust scores are calculated locally using end-to-end encryption metadata and cryptographic interaction length.
-            </p>
+            <p className="text-xs text-gray-500 leading-relaxed">Trust scores are calculated locally using end-to-end encryption metadata and cryptographic interaction length.</p>
           </div>
         </div>
       )}
 
-      {/* Live Code Editor Overlay */}
       {showCodeEditor && (
         <div className="absolute inset-0 bg-dark-900/95 z-40 flex flex-col items-center justify-center backdrop-blur-md px-10 py-6">
-          <div className="w-full flex justify-between items-center mb-4">
-            <h2 className="text-xl font-bold flex items-center gap-2"><Terminal className="h-5 w-5 text-green-400"/> Operational Transformation: Live Code Sync</h2>
-            <button onClick={() => setShowCodeEditor(false)} className="bg-gray-800 hover:bg-gray-700 p-2 rounded-full transition"><X className="h-5 w-5 text-white" /></button>
-          </div>
-          <div className="flex-1 w-full rounded-2xl overflow-hidden border border-gray-700 shadow-2xl">
-             <Editor height="100%" theme="vs-dark" defaultLanguage="javascript" value={liveCode} onChange={handleCodeChange} options={{ minimap: { enabled: false }, fontSize: 16 }} />
-          </div>
+          <div className="w-full flex justify-between items-center mb-4"><h2 className="text-xl font-bold flex items-center gap-2"><Terminal className="h-5 w-5 text-green-400"/> Operational Transformation: Live Code Sync</h2><button onClick={() => setShowCodeEditor(false)} className="bg-gray-800 hover:bg-gray-700 p-2 rounded-full transition"><X className="h-5 w-5 text-white" /></button></div>
+          <div className="flex-1 w-full rounded-2xl overflow-hidden border border-gray-700 shadow-2xl"><Editor height="100%" theme="vs-dark" defaultLanguage="javascript" value={liveCode} onChange={handleCodeChange} options={{ minimap: { enabled: false }, fontSize: 16 }} /></div>
         </div>
       )}
 
-      {/* Whiteboard Overlay */}
       {showWhiteboard && (
         <div className="absolute inset-0 bg-dark-900/95 z-40 flex flex-col items-center justify-center backdrop-blur-md">
           <div className="w-[800px] flex justify-between items-center mb-4">
-            <div className="flex items-center gap-4">
-              <h2 className="text-xl font-bold flex items-center gap-2"><PenTool className="h-5 w-5 text-purple-400"/> Shared Whiteboard</h2>
-              <div className="flex gap-2">
-                {['#ef4444', '#3b82f6', '#10b981', '#f59e0b', '#ffffff'].map(c => (<button key={c} onClick={() => setBrushColor(c)} className={`h-6 w-6 rounded-full border-2 ${brushColor === c ? 'border-white scale-110' : 'border-transparent'}`} style={{ backgroundColor: c }} />))}
-              </div>
-            </div>
-            <div className="flex gap-4">
-              <button onClick={clearCanvas} className="text-gray-400 hover:text-red-400 transition font-medium">Clear Board</button>
-              <button onClick={() => setShowWhiteboard(false)} className="bg-gray-800 hover:bg-gray-700 p-2 rounded-full transition"><X className="h-5 w-5 text-white" /></button>
-            </div>
+            <div className="flex items-center gap-4"><h2 className="text-xl font-bold flex items-center gap-2"><PenTool className="h-5 w-5 text-purple-400"/> Shared Whiteboard</h2><div className="flex gap-2">{['#ef4444', '#3b82f6', '#10b981', '#f59e0b', '#ffffff'].map(c => (<button key={c} onClick={() => setBrushColor(c)} className={`h-6 w-6 rounded-full border-2 ${brushColor === c ? 'border-white scale-110' : 'border-transparent'}`} style={{ backgroundColor: c }} />))}</div></div>
+            <div className="flex gap-4"><button onClick={clearCanvas} className="text-gray-400 hover:text-red-400 transition font-medium">Clear Board</button><button onClick={() => setShowWhiteboard(false)} className="bg-gray-800 hover:bg-gray-700 p-2 rounded-full transition"><X className="h-5 w-5 text-white" /></button></div>
           </div>
-          <div className="bg-dark-800 rounded-2xl overflow-hidden shadow-2xl border border-gray-700 cursor-crosshair">
-            <canvas ref={canvasRef} onMouseDown={startDrawing} onMouseMove={draw} onMouseUp={stopDrawing} onMouseOut={stopDrawing} className="touch-none block" />
-          </div>
+          <div className="bg-dark-800 rounded-2xl overflow-hidden shadow-2xl border border-gray-700 cursor-crosshair"><canvas ref={canvasRef} onMouseDown={startDrawing} onMouseMove={draw} onMouseUp={stopDrawing} onMouseOut={stopDrawing} className="touch-none block" /></div>
         </div>
       )}
 
-      {/* Standard Modals */}
       {showClearChatModal && (
         <div className="absolute inset-0 bg-dark-900/80 z-50 flex items-center justify-center backdrop-blur-sm">
           <div className="bg-dark-800 p-6 rounded-3xl border border-gray-700 text-center flex flex-col items-center w-80 shadow-2xl"><h3 className="text-lg font-bold text-white mb-2">Clear this chat?</h3><p className="text-sm text-gray-400 mb-6">Messages will only be removed from your device.</p><div className="flex flex-col gap-3 w-full"><button onClick={handleClearChat} className="w-full bg-red-500 hover:bg-red-600 text-white py-3 rounded-xl font-medium transition">Clear chat</button><button onClick={() => setShowClearChatModal(false)} className="w-full bg-dark-700 hover:bg-dark-600 text-white py-3 rounded-xl font-medium transition">Cancel</button></div></div>
@@ -615,7 +557,6 @@ export default function ChatDashboard() {
         </div>
       )}
 
-      {/* WebRTC Video Overlays */}
       {callStatus === 'receiving' && (
         <div className="absolute inset-0 bg-dark-900/90 z-50 flex items-center justify-center backdrop-blur-sm"><div className="bg-dark-800 p-8 rounded-2xl border border-gray-700 text-center flex flex-col items-center max-w-sm w-full shadow-2xl"><div className="h-20 w-20 bg-brand-500/20 rounded-full flex items-center justify-center mb-4 animate-pulse"><Phone className="h-10 w-10 text-brand-500" /></div><h2 className="text-2xl font-bold text-white mb-2">{incomingCallData?.from}</h2><div className="flex gap-4 w-full"><button onClick={endCallLocal} className="flex-1 bg-red-500 hover:bg-red-600 text-white py-3 rounded-xl font-medium transition">Decline</button><button onClick={acceptCall} className="flex-1 bg-green-500 hover:bg-green-600 text-white py-3 rounded-xl font-medium transition flex items-center justify-center gap-2">Accept</button></div></div></div>
       )}

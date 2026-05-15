@@ -13,18 +13,15 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app); 
 
-// Ensure uploads directory exists
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
 
-// Configure Multer for File Uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, 'uploads/'),
   filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname))
 });
 const upload = multer({ storage });
 
-// FIX 1: Dynamic CORS options to allow mobile/production domain
 const corsOptions = {
   origin: process.env.CLIENT_URL || "http://localhost:5173",
   methods: ["GET", "POST", "PUT", "DELETE"],
@@ -35,38 +32,31 @@ const io = new Server(server, {
   cors: corsOptions,
 });
 
-// Track online users with connection count (email -> count)
 const onlineUsers = new Map();
 
 io.on('connection', (socket) => {
-  // Handle user registration (after socket connects)
   socket.on('register_user', (userEmail) => {
     if (!userEmail) return;
-    socket.data.email = userEmail; // store email on socket for disconnect
+    socket.data.email = userEmail; 
 
     const currentCount = onlineUsers.get(userEmail) || 0;
     onlineUsers.set(userEmail, currentCount + 1);
 
-    // If this is the first connection for this user, notify others
     if (currentCount === 0) {
       socket.broadcast.emit('user_online', userEmail);
     }
 
-    // Send the current online list to the newly connected user
     socket.emit('online_users', Array.from(onlineUsers.keys()));
   });
 
-  // Handle disconnection
   socket.on('disconnect', () => {
     const userEmail = socket.data.email;
     if (!userEmail) return;
 
     const count = onlineUsers.get(userEmail);
     if (count > 1) {
-      // User still has other active connections
       onlineUsers.set(userEmail, count - 1);
     } else {
-      // Last connection closed
       onlineUsers.delete(userEmail);
       socket.broadcast.emit('user_offline', userEmail);
     }
@@ -75,7 +65,6 @@ io.on('connection', (socket) => {
   socket.on('join_room', (room_id) => socket.join(room_id));
   socket.on('leave_room', (room_id) => socket.leave(room_id));
 
-  // Chat Messaging
   socket.on('send_message', async (data, callback) => {
     try {
       const result = await pool.query(
@@ -92,8 +81,9 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Message delivered: update status from 'sent' to 'delivered' (if still 'sent')
+  // EXACT WHATSAPP LOGIC FIX: DB Crash Prevention
   socket.on('message_delivered', async ({ room, messageId }) => {
+    if (!messageId || isNaN(messageId)) return; // Prevent string/tempId from crashing PostgreSQL
     try {
       await pool.query(
         "UPDATE messages SET status = 'delivered' WHERE id = $1 AND status = 'sent'",
@@ -103,8 +93,8 @@ io.on('connection', (socket) => {
     } catch (err) {}
   });
 
-  // Message read: update status from 'sent' or 'delivered' to 'read'
   socket.on('message_read', async ({ room, messageId }) => {
+    if (!messageId || isNaN(messageId)) return; // Prevent string/tempId from crashing PostgreSQL
     try {
       await pool.query(
         "UPDATE messages SET status = 'read' WHERE id = $1 AND status IN ('sent', 'delivered')",
@@ -114,7 +104,6 @@ io.on('connection', (socket) => {
     } catch (err) {}
   });
 
-  // Deletion logic
   socket.on('delete_message', async ({ messageId, type, requester, room }) => {
     try {
       if (type === 'everyone') {
@@ -132,16 +121,13 @@ io.on('connection', (socket) => {
     } catch (err) {}
   });
 
-  // Operational Transformation (Live Code)
   socket.on('code_update', ({ room, code }) => {
     socket.to(room).emit('receive_code_update', code);
   });
 
-  // Whiteboard Events
   socket.on('whiteboard_draw', ({ room, data }) => socket.to(room).emit('receive_whiteboard_draw', data));
   socket.on('whiteboard_clear', (room) => socket.to(room).emit('receive_whiteboard_clear'));
 
-  // Typing & WebRTC Signaling
   socket.on('typing', (room) => socket.to(room).emit('user_typing'));
   socket.on('stop_typing', (room) => socket.to(room).emit('user_stopped_typing'));
   socket.on('call_user', (data) => socket.to(data.room).emit('incoming_call', { from: data.from, offer: data.offer, type: data.type }));
@@ -152,20 +138,17 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 5000;
 
-// FIX 2: Apply exact CORS options to Express
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use('/uploads', express.static(uploadDir)); 
 app.use('/api/auth', authRoutes);
 
-// FIX 3: Dynamic Upload Route to support remote access
 app.post('/api/upload', upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   const serverUrl = process.env.SERVER_URL || `http://localhost:${PORT}`;
   res.json({ url: `${serverUrl}/uploads/${req.file.filename}` });
 });
 
-// Update Profile
 app.put('/api/users/profile', async (req, res) => {
   const { email, full_name, avatar } = req.body;
   try {
@@ -179,7 +162,6 @@ app.put('/api/users/profile', async (req, res) => {
   }
 });
 
-// Fetch Users (Includes is_verified for the UI badges)
 app.get('/api/users', async (req, res) => {
   try {
     const result = await pool.query('SELECT id, full_name, email, avatar, is_verified FROM users ORDER BY full_name ASC');
@@ -189,7 +171,6 @@ app.get('/api/users', async (req, res) => {
   }
 });
 
-// Fetch Chat History
 app.get('/api/messages/:room_id', async (req, res) => {
   try {
     const { room_id } = req.params;
@@ -200,7 +181,6 @@ app.get('/api/messages/:room_id', async (req, res) => {
   }
 });
 
-// Trust Score Engine
 app.get('/api/trust/:room_id', async (req, res) => {
   try {
     const { room_id } = req.params;
@@ -210,7 +190,6 @@ app.get('/api/trust/:room_id', async (req, res) => {
     let score = 10;
     let level = "New Contact";
     
-    // Algorithm for Trust Scoring
     if (count > 50) { score = 98; level = "Highly Trusted"; }
     else if (count > 20) { score = 75; level = "Trusted"; }
     else if (count > 5) { score = 40; level = "Established"; }
