@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { MessageSquare } from 'lucide-react';
 import io from 'socket.io-client';
 import axios from 'axios';
 import CryptoJS from 'crypto-js';
