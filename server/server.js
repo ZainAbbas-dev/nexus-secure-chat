@@ -35,30 +35,33 @@ const io = new Server(server, {
 const onlineUsers = new Map();
 
 io.on('connection', (socket) => {
+  
+  // FIX: Accurate Online Status (Case-Insensitive)
   socket.on('register_user', (userEmail) => {
     if (!userEmail) return;
-    socket.data.email = userEmail; 
+    const email = userEmail.toLowerCase();
+    socket.data.email = email; 
 
-    const currentCount = onlineUsers.get(userEmail) || 0;
-    onlineUsers.set(userEmail, currentCount + 1);
+    const currentCount = onlineUsers.get(email) || 0;
+    onlineUsers.set(email, currentCount + 1);
 
     if (currentCount === 0) {
-      socket.broadcast.emit('user_online', userEmail);
+      socket.broadcast.emit('user_online', email);
     }
 
     socket.emit('online_users', Array.from(onlineUsers.keys()));
   });
 
   socket.on('disconnect', () => {
-    const userEmail = socket.data.email;
-    if (!userEmail) return;
+    const email = socket.data.email;
+    if (!email) return;
 
-    const count = onlineUsers.get(userEmail);
+    const count = onlineUsers.get(email);
     if (count > 1) {
-      onlineUsers.set(userEmail, count - 1);
+      onlineUsers.set(email, count - 1);
     } else {
-      onlineUsers.delete(userEmail);
-      socket.broadcast.emit('user_offline', userEmail);
+      onlineUsers.delete(email);
+      socket.broadcast.emit('user_offline', email);
     }
   });
 
@@ -72,7 +75,7 @@ io.on('connection', (socket) => {
         [data.room, data.author, data.message, data.time, 'sent']
       );
       const savedMessage = result.rows[0];
-      savedMessage.tempId = data.tempId;
+      savedMessage.tempId = data.tempId; // Return tempId for frontend tracking
       
       if (callback) callback(savedMessage);
       socket.to(data.room).emit('receive_message', savedMessage);
@@ -81,26 +84,20 @@ io.on('connection', (socket) => {
     }
   });
 
-  // EXACT WHATSAPP LOGIC FIX: DB Crash Prevention
-  socket.on('message_delivered', async ({ room, messageId }) => {
-    if (!messageId || isNaN(messageId)) return; // Prevent string/tempId from crashing PostgreSQL
+  // FIX: WHATSAPP LOGIC - Pass tempId back to sender to prevent race conditions
+  socket.on('message_delivered', async ({ room, messageId, tempId }) => {
+    if (!messageId || isNaN(messageId)) return;
     try {
-      await pool.query(
-        "UPDATE messages SET status = 'delivered' WHERE id = $1 AND status = 'sent'",
-        [messageId]
-      );
-      socket.to(room).emit('message_delivered', messageId);
+      await pool.query("UPDATE messages SET status = 'delivered' WHERE id = $1 AND status = 'sent'", [messageId]);
+      socket.to(room).emit('message_delivered', { id: messageId, tempId });
     } catch (err) {}
   });
 
-  socket.on('message_read', async ({ room, messageId }) => {
-    if (!messageId || isNaN(messageId)) return; // Prevent string/tempId from crashing PostgreSQL
+  socket.on('message_read', async ({ room, messageId, tempId }) => {
+    if (!messageId || isNaN(messageId)) return;
     try {
-      await pool.query(
-        "UPDATE messages SET status = 'read' WHERE id = $1 AND status IN ('sent', 'delivered')",
-        [messageId]
-      );
-      socket.to(room).emit('message_read', messageId);
+      await pool.query("UPDATE messages SET status = 'read' WHERE id = $1 AND status IN ('sent', 'delivered')", [messageId]);
+      socket.to(room).emit('message_read', { id: messageId, tempId });
     } catch (err) {}
   });
 
